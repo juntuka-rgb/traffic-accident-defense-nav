@@ -1,12 +1,55 @@
 import streamlit as st
 import pandas as pd
+import datetime
+import os.path
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+
+# --- 設定 ---
+v = "v2.2.1"
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+
+def google_calendar_auth():
+    """Googleカレンダー認証"""
+    creds = None
+    # token.jsonがあるか確認（.gitignoreでGitHubからは保護）
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            # サーバー上では認証画面が出せないため、ローカルで作成したtoken.jsonを使用する前提
+            st.error("認証トークン(token.json)が見つかりません。Mac miniで一度実行して作成してください。")
+            return None
+    try:
+        return build('calendar', 'v3', credentials=creds)
+    except Exception as e:
+        st.error(f"Google API接続エラー: {e}")
+        return None
+
+def add_to_calendar(service, summary, description, date):
+    """Googleカレンダーに予定登録"""
+    event = {
+        'summary': summary,
+        'description': description,
+        'start': {'date': date.isoformat(), 'timeZone': 'Asia/Tokyo'},
+        'end': {'date': (date + datetime.timedelta(days=1)).isoformat(), 'timeZone': 'Asia/Tokyo'},
+    }
+    try:
+        service.events().insert(calendarId='primary', body=event).execute()
+        return True
+    except:
+        return False
 
 def main():
-    # アプリ名の変更とバージョン更新
-    st.set_page_config(page_title="交通事故被害者のための生活防衛ナビ v2.1.1", layout="wide")
+    # アプリ設定
+    st.set_page_config(page_title=f"生活防衛ナビ {v}", layout="wide", page_icon="🛡️")
 
-    # --- ヘッダー・キャッチコピー ---
-    st.title("🛡️ 交通事故被害者のための生活防衛ナビ v2.1.1")
+    # --- ヘッダー ---
+    st.title(f"🛡️ 交通事故被害者のための生活防衛ナビ {v}")
     st.subheader("「黙っていたら損をする。被害者の体と生活を守る『攻め』の手順書」")
     
     st.info("""
@@ -17,7 +60,7 @@ def main():
     """)
 
     # --- メインメニュー（タブ形式） ---
-    tabs = st.tabs(["⚡ 初動", "🔍 検査", "🩹 治療", "⚖️ 補償・交渉"])
+    tabs = st.tabs(["⚡ 初動", "🔍 検査", "🩹 治療", "⚖️ 補償・交渉", "🗓️ カレンダー連携"])
 
     # --- 1. 初動 ---
     with tabs[0]:
@@ -85,41 +128,45 @@ def main():
             st.success("🔥 **理論武装（2026年）**")
             st.write("- **無料相談を活用し、プロのアドバイスを受ける。** 「休業損害の交渉は正当な権利」という裏付けを得て交渉。")
 
+    # --- 5. カレンダー連携（v2.2.1 新機能） ---
+    with tabs[4]:
+        st.header("🗓️ Googleカレンダー戦略連携")
+        st.write("事故日を入力すると、教訓に基づいた戦略的マイルストーンをカレンダーに登録できます。")
+        
+        accident_date = st.date_input("事故発生日を選択してください", datetime.date.today())
+        
+        # 戦略的マイルストーンの定義
+        milestones = [
+            {"days": 0, "title": "🚨 事故発生・初動対応", "desc": "警察・保険会社への連絡、人身切り替え。"},
+            {"days": 7, "title": "⚖️ 弁護士への初期相談", "desc": "保険会社へ特約確認。なければ無料相談へ。"},
+            {"days": 14, "title": "🩺 追加検査の提案", "desc": "痛みが引かないならMRI等を医師に強く提案。"},
+            {"days": 30, "title": "🩹 休業補償・内払いの交渉", "desc": "リハビリ継続。生活費確保のため内払いを交渉。"},
+            {"days": 90, "title": "📢 治療打ち切り打診への警戒", "desc": "保険会社からの終了打診に注意。継続の意志。"},
+            {"days": 180, "title": "🩺 症状固定・後遺障害の相談", "desc": "医師に後遺症を相談。弁護士と示談対策。"},
+        ]
+
+        st.table(pd.DataFrame([{
+            "予定日": (accident_date + datetime.timedelta(days=m['days'])).strftime("%Y/%m/%d"),
+            "項目": m['title'],
+            "内容": m['desc']
+        } for m in milestones]))
+
+        if st.button("🚀 このスケジュールをGoogleカレンダーに一括登録する"):
+            service = google_calendar_auth()
+            if service:
+                with st.spinner("カレンダーに登録中..."):
+                    count = 0
+                    for ms in milestones:
+                        target_date = accident_date + datetime.timedelta(days=ms['days'])
+                        if add_to_calendar(service, ms['title'], ms['desc'], target_date):
+                            count += 1
+                    if count > 0:
+                        st.success(f"✅ {count}件の予定をGoogleカレンダーに登録しました！")
+                    else:
+                        st.warning("登録に失敗しました。認証を確認してください。")
+
     st.divider()
-
-    # --- 5. プッシュ型：生活防衛スケジュール生成 ---
-    st.header("📅 被害者のための生活防衛スケジュール")
-    st.write("事故日を入力してください。作者の教訓に基づいた「2週間ループ」のミッションを表示します。")
-
-    incident_date = st.date_input("事故発生日を選択してください", value=None)
-
-    if incident_date:
-        missions = []
-        
-        # 0. 事故直後
-        missions.append({
-            "時期": "事故直後",
-            "ミッション": "【初動】現場検証後、即検査。診断書を警察へ提出し人身切り替え。保険会社に医療費の直接支払いを依頼。自身の保険会社へも連絡。",
-            "期限": incident_date
-        })
-        
-        # 2週間おきのループ
-        for i in range(1, 7):
-            weeks = i * 2
-            days = weeks * 7
-            target_date = incident_date + pd.Timedelta(days=days)
-            
-            missions.append({
-                "時期": f"{weeks}週間目",
-                "ミッション": "【定期点検】痛みが引かなければ追加検査（CT/MRI）を保険会社と交渉。重症判明時は内払い交渉と弁護士無料相談を実施。",
-                "期限": target_date
-            })
-        
-        st.subheader("🛡️ 実行すべきミッション・リスト")
-        st.table(pd.DataFrame(missions))
-
-        if st.button("🚀 このスケジュールをGoogleカレンダーに登録（開発中）"):
-            st.success("🔗 現在、Google Calendar APIとの連携機能を構築中です。")
+    st.write("© 2026 Jun Tsukada - ロジカルな防衛で、正当な権利を。")
 
 if __name__ == "__main__":
     main()
